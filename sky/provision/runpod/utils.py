@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from sky import sky_logging
 from sky.adaptors import runpod
 import sky.provision.runpod.api.commands as runpod_commands
+from sky.provision import docker_utils
 from sky.skylet import constants
 from sky.utils import common_utils
 
@@ -102,7 +103,8 @@ def list_instances() -> Dict[str, Dict[str, Any]]:
 
 def launch(name: str, instance_type: str, region: str, disk_size: int,
            image_name: str, ports: Optional[List[int]], public_key: str,
-           preemptible: Optional[bool], bid_per_gpu: float) -> str:
+           preemptible: Optional[bool], bid_per_gpu: float,
+           docker_login_config: Optional[Dict[str, str]]) -> str:
     """Launches an instance with the given parameters.
 
     Converts the instance_type to the RunPod GPU name, finds the specs for the
@@ -143,6 +145,28 @@ def launch(name: str, instance_type: str, region: str, disk_size: int,
     custom_ports_str = ''
     if ports is not None:
         custom_ports_str = ''.join([f'{p}/tcp,' for p in ports])
+    
+    template_id = None
+    
+    if docker_login_config is not None:
+        login_config = docker_utils.DockerLoginConfig(**docker_login_config)
+        # TODO(tian): The `name` argument seems only for display purpose but
+        # not specifying the registry server. Double check if that works for
+        # registries other than Docker Hub.
+        # TODO(tian): Delete the registry auth and template after the instance
+        # is terminated.
+        create_auth_resp = runpod.runpod.create_container_registry_auth(
+            name=f'{name}-registry-auth',
+            username=login_config.username,
+            password=login_config.password,
+        )
+        registry_auth_id = create_auth_resp['id']
+        create_template_resp = runpod.runpod.create_template(
+            name=f'{name}-template',
+            image_name=image_name,
+            registry_auth_id=registry_auth_id,
+        )
+        template_id = create_template_resp['id']
 
     docker_args = (f'bash -c \'echo {encoded} | base64 --decode > init.sh; '
                    f'bash init.sh\'')
@@ -164,6 +188,7 @@ def launch(name: str, instance_type: str, region: str, disk_size: int,
         'ports': ports,
         'support_public_ip': True,
         'docker_args': docker_args,
+        'template_id': template_id,
     }
 
     if preemptible is None or not preemptible:
